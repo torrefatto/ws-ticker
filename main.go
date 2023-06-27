@@ -116,6 +116,11 @@ type ticker struct {
 func (t *ticker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := t.logger.With().Str("method", r.Method).Str("uri", r.RequestURI).Logger()
 	logger.Info().Msg("Received request")
+	headersEvt := logger.Debug()
+	for k, v := range r.Header {
+		headersEvt = headersEvt.Strs(k, v)
+	}
+	headersEvt.Msg("Request headers")
 
 	if path := strings.TrimSuffix(r.URL.Path, "/"); path != t.route {
 		logger.Warn().Str("path", path).Msg("Invalid route")
