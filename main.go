@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -54,10 +55,11 @@ func main() {
 			if c.Bool("debug") {
 				logger = logger.Level(zerolog.DebugLevel)
 			}
+			route := strings.TrimSuffix(c.String("route"), "/")
 
 			ticker := &ticker{
 				logger:   logger,
-				route:    c.String("route"),
+				route:    route,
 				interval: c.Duration("interval"),
 			}
 
@@ -84,7 +86,8 @@ func (t *ticker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	logger := t.logger.With().Str("method", r.Method).Str("uri", r.RequestURI).Logger()
 	logger.Info().Msg("Received request")
 
-	if r.URL.Path != t.route {
+	if path := strings.TrimSuffix(r.URL.Path, "/"); path != t.route {
+		logger.Warn().Str("path", path).Msg("Invalid route")
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
