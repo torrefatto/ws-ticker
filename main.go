@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
@@ -13,7 +14,10 @@ import (
 	"github.com/urfave/cli/v2"
 )
 
-var upgrader = websocket.Upgrader{}
+var (
+	closeTimeout = time.Second
+	upgrader     = websocket.Upgrader{}
+)
 
 func main() {
 	ctx := context.Background()
@@ -23,6 +27,14 @@ func main() {
 		Timestamp().
 		Logger()
 	ctx = logger.WithContext(ctx)
+
+	shutdown := make(chan struct{})
+	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt)
+	defer cancel()
+	go func() {
+		<-ctx.Done()
+		close(shutdown)
+	}()
 
 	app := &cli.App{
 		Name: "ws-ticker",
@@ -55,17 +67,35 @@ func main() {
 			if c.Bool("debug") {
 				logger = logger.Level(zerolog.DebugLevel)
 			}
+			logger.Debug().Msg("Debug logging enabled")
+
 			route := strings.TrimSuffix(c.String("route"), "/")
 
 			ticker := &ticker{
 				logger:   logger,
 				route:    route,
 				interval: c.Duration("interval"),
+				shutdown: shutdown,
 			}
 
-			logger.Info().Msgf("Listening on port %d", c.Uint("port"))
+			logger.Info().
+				Str("route", route).
+				Uint("port", c.Uint("port")).
+				Msgf("Listening on port %d", c.Uint("port"))
 
-			return http.ListenAndServe(fmt.Sprintf(":%d", c.Uint("port")), ticker)
+			errCh := make(chan error)
+			go func() {
+				errCh <- http.ListenAndServe(fmt.Sprintf(":%d", c.Uint("port")), ticker)
+			}()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case err := <-errCh:
+					return err
+				}
+			}
 		},
 	}
 
@@ -80,6 +110,7 @@ type ticker struct {
 	logger   zerolog.Logger
 	route    string
 	interval time.Duration
+	shutdown chan struct{}
 }
 
 func (t *ticker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -109,9 +140,15 @@ func (t *ticker) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-		case <-r.Context().Done():
-			err := r.Context().Err()
-			logger.Warn().Err(err).Msg("Context done")
+		case <-t.shutdown:
+			logger.Info().Err(err).Msg("Shutting down")
+			if err := conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+				time.Now().Add(closeTimeout),
+			); err != nil {
+				logger.Warn().Err(err).Msg("Failed to write close message")
+			}
 			return
 		}
 	}
